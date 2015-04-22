@@ -14,3 +14,14 @@ Components
 *  High Resolution Timers
 *  IPC Mechanisms (Shared Memory, Messaging, FD Transfer, etc.)
 *  The usual logging and assertion utilities
+
+Usage
+-----
+
+* Add this repository as a submodule/subdirectory of the project using the same
+* Add the following to the `CMakeLists.txt`:
+```
+add_subdirectory(CoreLib)
+include_directories(${CoreLib_SOURCE_DIR}/Headers)
+target_link_libraries(... CoreLib)
+```

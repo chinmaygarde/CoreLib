@@ -82,8 +82,8 @@ class Socket {
      *  Reading and writing messages on sockets
      */
 
-    virtual Status WriteMessage(Message &message) = 0;
-    virtual ReadResult ReadMessages() = 0;
+    Status WriteMessage(Message &message);
+    ReadResult ReadMessages();
 
     Handle handle() const {
         return _handle;

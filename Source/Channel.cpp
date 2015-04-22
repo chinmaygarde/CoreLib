@@ -26,7 +26,6 @@
 #include "Channel.h"
 #include "Message.h"
 #include "Utilities.h"
-#include "NetworkUtilities.h"
 
 using namespace cl;
 

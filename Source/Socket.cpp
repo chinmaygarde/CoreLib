@@ -22,12 +22,10 @@
   SOFTWARE.
 */
 
-
-#include "NetworkUtilities.h"
 #include "Socket.h"
-#include "StreamSocket.h"
-#include "SeqPacketSocket.h"
 #include "Utilities.h"
+#include "Attachment.h"
+#include "Message.h"
 
 #if __APPLE__
 // For Single Unix Standard v3 (SUSv3) conformance
@@ -35,10 +33,17 @@
 #endif
 
 #include <mutex>
+
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+
+#include <errno.h>
+
+#include <poll.h>
 
 using namespace cl;
 
@@ -49,18 +54,14 @@ const size_t Socket::MaxControlBufferSize =
     CMSG_SPACE(ControlBufferItemSize * MaxControlBufferItemCount);
 
 std::unique_ptr<Socket> Socket::Create(Socket::Handle handle) {
-    if (NetworkUtil::SocketSeqPacketSupported()) {
-        return cl::Utils::make_unique<SeqPacketSocket>(handle);
-    } else {
-        return cl::Utils::make_unique<StreamSocket>(handle);
-    }
+    return cl::Utils::make_unique<Socket>(handle);
 }
 
 Socket::Pair Socket::CreatePair() {
     int socketHandles[2] = {0};
 
     CL_CHECK(::socketpair(AF_UNIX,
-                              NetworkUtil::SupportedDomainSocketType(),
+                              SOCK_SEQPACKET,
                               0,
                               socketHandles));
 
@@ -75,7 +76,7 @@ Socket::Socket(Handle handle) {
      */
 
     if (handle == 0) {
-        handle = ::socket(AF_UNIX, NetworkUtil::SupportedDomainSocketType(), 0);
+        handle = ::socket(AF_UNIX, SOCK_SEQPACKET, 0);
         CL_ASSERT(handle != -1);
     }
 
@@ -149,4 +150,184 @@ Socket::~Socket() {
 
     free(_buffer);
     free(_controlBuffer);
+}
+
+Socket::ReadResult Socket::ReadMessages() {
+    AutoLock lock(_lock);
+
+    struct iovec vec[1] = {{0}};
+
+    vec[0].iov_base = _buffer;
+    vec[0].iov_len = MaxBufferSize;
+
+    std::vector<std::unique_ptr<Message>> messages;
+
+    while (true) {
+
+        struct msghdr messageHeader = {
+            .msg_name = nullptr,
+            .msg_namelen = 0,
+            .msg_iov = vec,
+            .msg_iovlen = sizeof(vec) / sizeof(struct iovec),
+            .msg_control = _controlBuffer,
+            .msg_controllen = static_cast<socklen_t>(MaxControlBufferSize),
+            .msg_flags = 0,
+        };
+
+        int received =
+            CL_TEMP_FAILURE_RETRY(::recvmsg(_handle, &messageHeader, 0));
+
+        if (received > 0) {
+
+            auto message =
+                cl::Utils::make_unique<Message>(_buffer, received);
+
+            /*
+             *  Check if the message contains descriptors.
+             *  Read all descriptors in one go
+             */
+            if (messageHeader.msg_controllen != 0) {
+                struct cmsghdr *cmsgh = nullptr;
+
+                while ((cmsgh = CMSG_NXTHDR(&messageHeader, cmsgh)) !=
+                       nullptr) {
+                    CL_ASSERT(cmsgh->cmsg_level == SOL_SOCKET);
+                    CL_ASSERT(cmsgh->cmsg_type == SCM_RIGHTS);
+                    CL_ASSERT(cmsgh->cmsg_len ==
+                                  CMSG_LEN(ControlBufferItemSize));
+
+                    int descriptor = -1;
+                    memcpy(&descriptor, CMSG_DATA(cmsgh),
+                           ControlBufferItemSize);
+
+                    CL_ASSERT(descriptor != -1);
+
+                    Attachment attachment(descriptor);
+                    message->addAttachment(attachment);
+                }
+            }
+
+            /*
+             *  Since we dont handle partial writes of the control messages,
+             *  assert that the same was not truncated.
+             */
+            CL_ASSERT((messageHeader.msg_flags & MSG_CTRUNC) == 0);
+
+            /*
+             *  Finally! We have the message and possible attachments. Try for
+             * more.
+             */
+            messages.push_back(std::move(message));
+
+            continue;
+        }
+
+        if (received == -1) {
+            /*
+             *  All pending messages have been read. poll for more
+             *  in subsequent calls. We are finally done!
+             */
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /*
+                 *  Return as a successful read
+                 */
+                break;
+            }
+
+            return ReadResult(Status::TemporaryFailure, std::move(messages));
+        }
+
+        if (received == 0) {
+            /*
+             *  if no messages are available to be received and the peer
+             *  has performed an orderly shutdown, recvmsg() returns 0
+             */
+            return ReadResult(Status::PermanentFailure, std::move(messages));
+        }
+    }
+
+    return ReadResult(Status::Success, std::move(messages));
+}
+
+Socket::Status Socket::WriteMessage(Message &message) {
+    AutoLock lock(_lock);
+
+    if (message.size() > MaxBufferSize) {
+        return Status::TemporaryFailure;
+    }
+
+    struct iovec vec[1] = {{0}};
+
+    vec[0].iov_base = (void *)message.data();
+    vec[0].iov_len = message.size();
+
+    struct msghdr messageHeader = {
+        .msg_name = nullptr,
+        .msg_namelen = 0,
+        .msg_iov = vec,
+        .msg_iovlen = sizeof(vec) / sizeof(struct iovec),
+        .msg_control = nullptr,
+        .msg_controllen = 0,
+        .msg_flags = 0,
+    };
+
+    const auto range = message.attachmentRange();
+
+    const size_t descriptorCount = range.second - range.first;
+
+    if (descriptorCount > 0) {
+
+        /*
+         *  Create an array of file descriptors
+         */
+
+        int descriptors[descriptorCount];
+
+        size_t index = 0;
+        for (auto i = range.first; i != range.second; i++) {
+            descriptors[index++] = (*i).handle();
+        }
+
+        auto controlLength = CMSG_SPACE(sizeof(descriptors));
+
+        char buffer[controlLength];
+        messageHeader.msg_control = buffer;
+        messageHeader.msg_controllen = controlLength;
+
+        struct cmsghdr *cmsgh = CMSG_FIRSTHDR(&messageHeader);
+
+        cmsgh->cmsg_level = SOL_SOCKET;
+        cmsgh->cmsg_type = SCM_RIGHTS;
+        cmsgh->cmsg_len = CMSG_LEN(sizeof(descriptors));
+
+        memcpy((int *)CMSG_DATA(cmsgh), descriptors, sizeof(descriptors));
+
+        messageHeader.msg_controllen = cmsgh->cmsg_len;
+    }
+
+    int sent = 0;
+
+    while (true) {
+        sent = CL_TEMP_FAILURE_RETRY(::sendmsg(_handle, &messageHeader, 0));
+
+        if (sent == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            struct pollfd pollFd = {
+                .fd = _handle, .events = POLLOUT, .revents = 0,
+            };
+
+            int res =
+                CL_TEMP_FAILURE_RETRY(::poll(&pollFd, 1, -1 /* timeout */));
+
+            CL_ASSERT(res == 1);
+        } else {
+            break;
+        }
+    }
+
+    if (sent != message.size()) {
+        return errno == EPIPE ? Status::PermanentFailure
+                              : Status::TemporaryFailure;
+    }
+
+    return Status::Success;
 }

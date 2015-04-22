@@ -24,7 +24,6 @@
 
 #include "Server.h"
 #include "Utilities.h"
-#include "NetworkUtilities.h"
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -38,7 +37,7 @@ Server::Server(std::string name)
      *  Step 1: Create the socket
      */
     int socketHandle =
-        socket(AF_UNIX, NetworkUtil::SupportedDomainSocketType(), 0);
+        socket(AF_UNIX, SOCK_SEQPACKET, 0);
 
     if (socketHandle == -1) {
         CL_LOG_ERRNO();

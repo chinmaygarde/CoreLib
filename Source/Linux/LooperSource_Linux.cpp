@@ -36,21 +36,26 @@
 
 using namespace cl;
 
-static inline void LooperSource_UpdateEpollSource(int eventsMask, void *data, int epollDesc, int operation, int desc) {
-    struct epoll_event event = { 0 };
+static inline void LooperSource_UpdateEpollSource(int eventsMask, void *data,
+                                                  int epollDesc, int operation,
+                                                  int desc) {
+    struct epoll_event event = {0};
 
     event.events = eventsMask;
     event.data.ptr = data; /* union */
-    
+
     CL_TEMP_FAILURE_RETRY(::epoll_ctl(epollDesc, operation, desc, &event));
 }
 
-void LooperSource::updateInWaitSetHandle(WaitSet::Handle waitsetHandle, bool shouldAdd) {
+void LooperSource::updateInWaitSetHandle(WaitSet::Handle waitsetHandle,
+                                         bool shouldAdd) {
+
     if (_customWaitSetUpdateHandler) {
-        _customWaitSetUpdateHandler(this, waitsetHandle, readHandle(), shouldAdd);
+        _customWaitSetUpdateHandler(this, waitsetHandle, readHandle(),
+                                    shouldAdd);
         return;
     }
-    
+
     LooperSource_UpdateEpollSource(EPOLLIN,
                                    this,
                                    waitsetHandle,
@@ -58,17 +63,18 @@ void LooperSource::updateInWaitSetHandle(WaitSet::Handle waitsetHandle, bool sho
                                    readHandle());
 }
 
-std::shared_ptr<LooperSource> LooperSource::AsTimer(std::chrono::nanoseconds repeatInterval) {
-    IOHandlesAllocator allocator = [repeatInterval] () {
+std::shared_ptr<LooperSource>
+LooperSource::AsTimer(std::chrono::nanoseconds repeatInterval) {
+    IOHandlesAllocator allocator = [repeatInterval]() {
 
         /*
          *  Create and arm the timer file descriptor
          */
         Handle desc = timerfd_create(CLOCK_MONOTONIC, 0);
-        
+
         const uint64_t nano_secs = repeatInterval.count();
 
-        struct itimerspec spec = { 0 };
+        struct itimerspec spec = {0};
 
         spec.it_value.tv_sec = (time_t)(nano_secs / NSEC_PER_SEC);
         spec.it_value.tv_nsec = nano_secs % NSEC_PER_SEC;
@@ -77,11 +83,14 @@ std::shared_ptr<LooperSource> LooperSource::AsTimer(std::chrono::nanoseconds rep
 
         return Handles(desc, -1);
     };
-    
-    IOHandlesDeallocator deallocator = [] (Handles handles) {
+
+    IOHandlesDeallocator deallocator = [](Handles handles) {
         CL_ASSERT(handles.second == -1 /* since we never assigned one */);
         CL_CHECK(::close(handles.first));
     };
 
-    return std::make_shared<LooperSource>(allocator, deallocator, nullptr, nullptr);
+    return std::make_shared<LooperSource>(allocator,
+                                          deallocator,
+                                          nullptr,
+                                          nullptr);
 }

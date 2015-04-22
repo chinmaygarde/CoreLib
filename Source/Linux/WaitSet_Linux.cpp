@@ -32,18 +32,22 @@
 using namespace cl;
 
 WaitSet::Handle WaitSet::platformHandleCreate() {
-    WaitSet::Handle handle = CL_TEMP_FAILURE_RETRY(::epoll_create(1 /* unused */));
+    WaitSet::Handle handle =
+        CL_TEMP_FAILURE_RETRY(::epoll_create(1 /* unused */));
+
     CL_ASSERT(handle != -1);
+    
     return handle;
 }
 
 LooperSource *WaitSet::platformHandleWait(WaitSet::Handle handle) {
-    struct epoll_event event = { 0 };
-    
-    int val = CL_TEMP_FAILURE_RETRY(::epoll_wait(handle, &event, 1, -1 /* infinite timeout */));
-    
+    struct epoll_event event = {0};
+
+    int val = CL_TEMP_FAILURE_RETRY(
+        ::epoll_wait(handle, &event, 1, -1 /* infinite timeout */));
+
     CL_ASSERT(val == 1);
-    
+
     return static_cast<LooperSource *>(event.data.ptr);
 }
 

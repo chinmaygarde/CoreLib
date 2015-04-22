@@ -1,0 +1,13 @@
+language: cpp
+
+compiler:
+    - gcc
+    - clang
+
+script: cmake . && make
+
+os:
+    - linux
+    - osx
+
+osx_image: xcode61

@@ -79,6 +79,8 @@ LooperSource::AsTimer(std::chrono::nanoseconds repeatInterval) {
         spec.it_value.tv_sec = (time_t)(nano_secs / NSEC_PER_SEC);
         spec.it_value.tv_nsec = nano_secs % NSEC_PER_SEC;
 
+        spec.it_interval = spec.it_value;
+
         CL_CHECK(::timerfd_settime(desc, 0, &spec, nullptr));
 
         return Handles(desc, -1);
@@ -89,8 +91,22 @@ LooperSource::AsTimer(std::chrono::nanoseconds repeatInterval) {
         CL_CHECK(::close(handles.first));
     };
 
+    IOHandler reader = [](Handle r) {
+        /*
+         *  8 bytes must be read from a signalled timer file descriptor when
+         *  signalled.
+         */
+        uint64_t fireCount = 0;
+
+        ssize_t size =
+            CL_TEMP_FAILURE_RETRY(::read(r, &fireCount, sizeof(uint64_t)));
+
+        CL_ASSERT(size == sizeof(uint64_t));
+    };
+
+
     return std::make_shared<LooperSource>(allocator,
                                           deallocator,
-                                          nullptr,
+                                          reader,
                                           nullptr);
 }

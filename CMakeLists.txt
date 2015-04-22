@@ -47,6 +47,8 @@ elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     )
 endif()
 
+include_directories ("Headers")
+
 add_library(CoreLib ${CORELIB_SRC} ${CORELIB_SRC_PLATFORM})
 
 if(UNIX AND NOT APPLE)
